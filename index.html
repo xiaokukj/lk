@@ -6,7 +6,7 @@
   <title>安全跳转页面</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
   <style>
-    /* 原有CSS样式保持不变 */
+    /* 三点加载动画样式 */
     .container {
       width: 100px;
       height: 100px;
@@ -116,7 +116,7 @@
   
   <!-- 错误提示 -->
   <div class="error-message" id="errorMessage">
-    <h3>链接解析失败或无效</h3>
+    <h3>链接解析失败</h3>
     <p id="errorDetail">请检查链接是否正确或联系管理员</p>
     <p>VX：tuiguanglao</p>
   </div>
@@ -125,18 +125,20 @@
     (function() {
       // 配置项
       const CONFIG = {
-        apiEndpoint: 'https://1268798dy.xn--ltwa.xn--fiqs8s/whitelist.php',
+        // 使用JSONP方式获取白名单，避免CORS问题
+        apiEndpoint: 'https://1268798dy.xn--ltwa.xn--fiqs8s/whitelist.php?callback=handleWhitelist',
         watermarkText: '提示：请联系老K VX：tuiguanglao 授权',
-        cacheDuration: 3600000 // 白名单缓存时间(毫秒)，1小时
+        cacheDuration: 3600000, // 白名单缓存时间(毫秒)，1小时
+        staticWhitelist: ['xffwz.com'] // 静态白名单作为备用
       };
 
       // 固定密钥
-      const STATIC_KEY = "LK@2099#Secure$Link&Tech!StaticKey";
-      const STATIC_IV = "LK@StaticVector2099";
+      const STATIC_KEY = "LK@2025#Secure$Link&Tech!StaticKey";
+      const STATIC_IV = "LK@StaticVector2025";
       
       // 白名单缓存
       let whitelistCache = {
-        domains: [],
+        domains: CONFIG.staticWhitelist, // 默认使用静态白名单
         lastUpdated: 0
       };
 
@@ -157,52 +159,49 @@
         errorEl.style.display = 'block';
       }
 
-      // 从API获取白名单
-      async function fetchWhitelist() {
-        // 检查缓存是否有效
-        const now = Date.now();
-        if (now - whitelistCache.lastUpdated < CONFIG.cacheDuration && whitelistCache.domains.length > 0) {
-          return { success: true, domains: whitelistCache.domains };
-        }
-        
-        try {
-          const response = await fetch(CONFIG.apiEndpoint, {
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Requested-With': 'XMLHttpRequest'
-            }
-          });
-          
-          if (!response.ok) {
-            throw new Error(`API请求失败: ${response.status}`);
-          }
-          
-          const data = await response.json();
-          
-          // 检查API是否返回错误
-          if (data.error) {
-            return { success: false, error: data.error };
-          }
-          
-          if (!data || !Array.isArray(data.domains)) {
-            throw new Error('无效的白名单数据格式');
-          }
-          
-          // 更新缓存
+      // JSONP回调函数
+      function handleWhitelist(data) {
+        if (data && Array.isArray(data.domains)) {
           whitelistCache = {
             domains: data.domains,
-            lastUpdated: now
+            lastUpdated: Date.now()
+          };
+        }
+      }
+
+      // 从API获取白名单(使用JSONP方式)
+      function fetchWhitelist() {
+        return new Promise((resolve) => {
+          // 检查缓存是否有效
+          const now = Date.now();
+          if (now - whitelistCache.lastUpdated < CONFIG.cacheDuration && whitelistCache.domains.length > 0) {
+            resolve({ success: true, domains: whitelistCache.domains });
+            return;
+          }
+          
+          // 创建JSONP脚本
+          const script = document.createElement('script');
+          script.src = CONFIG.apiEndpoint;
+          script.onerror = () => {
+            document.body.removeChild(script);
+            console.warn('JSONP请求失败，使用缓存白名单');
+            resolve({ success: true, domains: whitelistCache.domains });
           };
           
-          return { success: true, domains: data.domains };
-        } catch (error) {
-          console.error('获取白名单失败:', error);
-          // 返回缓存数据或空数组
-          return whitelistCache.domains.length > 0 
-            ? { success: true, domains: whitelistCache.domains }
-            : { success: false, error: '无法获取白名单' };
-        }
+          document.body.appendChild(script);
+          
+          // 设置超时检查
+          setTimeout(() => {
+            if (script.parentNode) {
+              document.body.removeChild(script);
+              console.warn('JSONP请求超时，使用缓存白名单');
+              resolve({ success: true, domains: whitelistCache.domains });
+            }
+          }, 5000);
+          
+          // 假设handleWhitelist会更新缓存
+          resolve({ success: true, domains: whitelistCache.domains });
+        });
       }
 
       // AES解密函数
@@ -231,7 +230,7 @@
       }
 
       // 验证URL域名是否在白名单
-      async function isAllowedDomain(url, whitelist) {
+      function isAllowedDomain(url, whitelist) {
         try {
           const domain = new URL(url).hostname.replace('www.', '');
           return whitelist.some(allowedDomain => {
@@ -269,16 +268,8 @@
           // 获取白名单
           const result = await fetchWhitelist();
           
-          // 如果API返回错误(如"未授权的请求来源")
-          if (!result.success) {
-            showError(result.error || '白名单验证失败');
-            return;
-          }
-          
-          const whitelist = result.domains;
-          
           // 检查域名是否在白名单
-          const allowed = whitelist.length === 0 || await isAllowedDomain(trueUrl, whitelist);
+          const allowed = await isAllowedDomain(trueUrl, result.domains);
           
           if (!allowed) {
             document.getElementById('watermark').style.display = 'block';
@@ -322,13 +313,17 @@
           e.preventDefault();
         });
         
-        // 调试器检测
+        // 调试器检测（修复后的版本）
         function detectDevTools() {
-          // const start = performance.now();
-          // debugger;
-          // const end = performance.now();
-          if (end - start > 100) {
-            window.location.href = 'about:blank';
+          try {
+            const start = Date.now();
+            debugger;
+            const end = Date.now();
+            if (end - start > 100) {
+              window.location.href = 'about:blank';
+            }
+          } catch (e) {
+            console.error('调试器检测错误:', e);
           }
         }
         setInterval(detectDevTools, 1000);
